@@ -1,0 +1,344 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>mlab.glb — Free Fly Viewer</title>
+<style>
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  body { background: #0a0b0f; color: #e8e8e0; font-family: 'Courier New', monospace; overflow: hidden; height: 100vh; width: 100vw; }
+  canvas { display: block; width: 100vw; height: 100vh; }
+
+  #crosshair {
+    position: fixed; top: 50%; left: 50%;
+    transform: translate(-50%, -50%);
+    width: 16px; height: 16px; pointer-events: none; opacity: 0.45;
+  }
+  #crosshair::before, #crosshair::after {
+    content: ''; position: absolute; background: #e8e8e0;
+  }
+  #crosshair::before { width: 1px; height: 100%; left: 50%; top: 0; }
+  #crosshair::after  { height: 1px; width: 100%; top: 50%; left: 0; }
+
+  #hud {
+    position: fixed; bottom: 20px; left: 50%; transform: translateX(-50%);
+    display: flex; gap: 6px; align-items: center;
+    background: rgba(10,11,15,0.72); border: 1px solid rgba(255,255,255,0.08);
+    border-radius: 10px; padding: 9px 16px;
+    font-size: 11px; letter-spacing: 0.07em; color: rgba(232,232,224,0.5);
+    backdrop-filter: blur(8px); pointer-events: none; user-select: none;
+  }
+  .key {
+    display: inline-block; background: rgba(255,255,255,0.07);
+    border: 1px solid rgba(255,255,255,0.15); border-radius: 4px;
+    padding: 2px 6px; font-size: 10px; color: rgba(232,232,224,0.8);
+  }
+  .sep { opacity: 0.2; margin: 0 2px; }
+
+  #info {
+    position: fixed; top: 18px; left: 18px;
+    font-size: 11px; letter-spacing: 0.06em;
+    color: rgba(232,232,224,0.3); pointer-events: none; line-height: 1.9;
+  }
+  #info .title { font-size: 13px; color: rgba(232,232,224,0.7); letter-spacing: 0.14em; text-transform: uppercase; margin-bottom: 2px; }
+
+  #status {
+    position: fixed; top: 18px; right: 18px;
+    font-size: 11px; letter-spacing: 0.06em;
+    color: rgba(232,232,224,0.3); pointer-events: none; text-align: right; line-height: 1.9;
+  }
+
+  #loading {
+    position: fixed; inset: 0; display: flex; flex-direction: column;
+    align-items: center; justify-content: center;
+    background: #0a0b0f; z-index: 100; gap: 14px;
+    transition: opacity 0.5s ease;
+  }
+  #loading.fade-out { opacity: 0; pointer-events: none; }
+  .loader-bar { width: 200px; height: 1px; background: rgba(255,255,255,0.08); overflow: hidden; }
+  .loader-fill { height: 100%; background: rgba(232,232,224,0.55); width: 0%; transition: width 0.3s ease; }
+  .loader-label { font-size: 11px; letter-spacing: 0.2em; text-transform: uppercase; color: rgba(232,232,224,0.4); }
+
+  #drop-overlay {
+    position: fixed; inset: 20px; display: none; align-items: center; justify-content: center;
+    background: rgba(10,11,15,0.85); z-index: 200;
+    font-size: 14px; letter-spacing: 0.18em; color: rgba(232,232,224,0.55);
+    border: 1px dashed rgba(255,255,255,0.15); border-radius: 12px; pointer-events: none;
+  }
+  #drop-overlay.active { display: flex; }
+</style>
+</head>
+<body>
+
+<div id="loading">
+  <div class="loader-label" id="load-text">Loading mlab.glb</div>
+  <div class="loader-bar"><div class="loader-fill" id="loader-fill"></div></div>
+</div>
+
+<canvas id="c"></canvas>
+<div id="crosshair"></div>
+
+<div id="info">
+  <div class="title">mlab.glb</div>
+  <div id="fps">— fps</div>
+  <div id="pos">0.0 0.0 0.0</div>
+</div>
+
+<div id="status">
+  <div>Click to capture mouse</div>
+  <div id="mouse-state">Mouse: free</div>
+</div>
+
+<div id="hud">
+  <span class="key">W</span><span class="key">A</span><span class="key">S</span><span class="key">D</span>
+  <span class="sep">·</span> Move
+  <span class="sep">|</span>
+  <span class="key">Space</span> Up
+  <span class="sep">·</span>
+  <span class="key">Shift</span> Down
+  <span class="sep">|</span>
+  Mouse look
+  <span class="sep">·</span>
+  <span class="key">Esc</span> Release
+</div>
+
+<div id="drop-overlay">Drop a .glb / .gltf to reload</div>
+
+<script type="importmap">
+{
+  "imports": {
+    "three": "https://cdn.jsdelivr.net/npm/three@0.162.0/build/three.module.js"
+  }
+}
+</script>
+
+<script type="module">
+import * as THREE from "three";
+import { GLTFLoader } from "https://cdn.jsdelivr.net/npm/three@0.162.0/examples/jsm/loaders/GLTFLoader.js";
+import { DRACOLoader } from "https://cdn.jsdelivr.net/npm/three@0.162.0/examples/jsm/loaders/DRACOLoader.js";
+
+// ── Renderer ──────────────────────────────────────────────────────────────────
+const canvas = document.getElementById('c');
+const renderer = new THREE.WebGLRenderer({ canvas, antialias: true });
+renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+renderer.setSize(window.innerWidth, window.innerHeight);
+renderer.shadowMap.enabled = true;
+renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+renderer.outputColorSpace = THREE.SRGBColorSpace;
+renderer.toneMapping = THREE.ACESFilmicToneMapping;
+renderer.toneMappingExposure = 1.2;
+
+// ── Scene ─────────────────────────────────────────────────────────────────────
+const scene = new THREE.Scene();
+scene.background = new THREE.Color(0x0a0b0f);
+scene.fog = new THREE.FogExp2(0x0a0b0f, 0.006);
+
+// ── Lights ────────────────────────────────────────────────────────────────────
+scene.add(new THREE.AmbientLight(0xffffff, 0.5));
+
+const sun = new THREE.DirectionalLight(0xffe8c0, 2.0);
+sun.position.set(10, 20, 10);
+sun.castShadow = true;
+sun.shadow.mapSize.set(2048, 2048);
+Object.assign(sun.shadow.camera, { near: 0.5, far: 300, left: -60, right: 60, top: 60, bottom: -60 });
+scene.add(sun);
+
+const fill = new THREE.DirectionalLight(0xc0d8ff, 0.7);
+fill.position.set(-10, 5, -10);
+scene.add(fill);
+
+scene.add(new THREE.HemisphereLight(0x202840, 0x0a0b0f, 0.6));
+
+// ── Camera + fly rig ─────────────────────────────────────────────────────────
+const camera = new THREE.PerspectiveCamera(70, window.innerWidth / window.innerHeight, 0.01, 2000);
+
+// Yaw/pitch rig: yawObject holds pitchObject holds camera
+const yawObj = new THREE.Object3D();
+const pitchObj = new THREE.Object3D();
+yawObj.add(pitchObj);
+pitchObj.add(camera);
+scene.add(yawObj);
+
+yawObj.position.set(0, 2, 8);
+
+// ── Pointer lock ──────────────────────────────────────────────────────────────
+let locked = false;
+canvas.addEventListener('click', () => canvas.requestPointerLock());
+document.addEventListener('pointerlockchange', () => {
+  locked = document.pointerLockElement === canvas;
+  document.getElementById('mouse-state').textContent = locked ? 'Mouse: captured' : 'Mouse: free';
+});
+document.addEventListener('mousemove', e => {
+  if (!locked) return;
+  yawObj.rotation.y   -= e.movementX * 0.0018;
+  pitchObj.rotation.x -= e.movementY * 0.0018;
+  pitchObj.rotation.x  = Math.max(-Math.PI / 2, Math.min(Math.PI / 2, pitchObj.rotation.x));
+});
+
+// ── Keys ──────────────────────────────────────────────────────────────────────
+const keys = {};
+window.addEventListener('keydown', e => { keys[e.code] = true;  e.code === 'Space' && e.preventDefault(); });
+window.addEventListener('keyup',   e => { keys[e.code] = false; });
+
+// ── GLB loader ───────────────────────────────────────────────────────────────
+const dracoLoader = new DRACOLoader();
+dracoLoader.setDecoderPath('https://cdn.jsdelivr.net/npm/three@0.162.0/examples/jsm/libs/draco/');
+
+const loader = new GLTFLoader();
+loader.setDRACOLoader(dracoLoader);
+
+const fillEl   = document.getElementById('loader-fill');
+const loadText = document.getElementById('load-text');
+const loadingEl = document.getElementById('loading');
+
+let mixer = null;
+let currentModel = null;
+
+function hideLoading() {
+  fillEl.style.width = '100%';
+  setTimeout(() => {
+    loadingEl.classList.add('fade-out');
+    setTimeout(() => loadingEl.style.display = 'none', 600);
+  }, 300);
+}
+
+function loadGLB(url, name) {
+  // Remove previous model
+  if (currentModel) { scene.remove(currentModel); currentModel = null; }
+  if (mixer) { mixer.stopAllAction(); mixer = null; }
+
+  loadingEl.style.display = 'flex';
+  loadingEl.classList.remove('fade-out');
+  fillEl.style.width = '0%';
+  loadText.textContent = `Loading ${name}`;
+
+  loader.load(
+    url,
+    gltf => {
+      const model = gltf.scene;
+      model.traverse(n => { if (n.isMesh) { n.castShadow = true; n.receiveShadow = true; } });
+
+      // Fit to scene
+      const box    = new THREE.Box3().setFromObject(model);
+      const size   = box.getSize(new THREE.Vector3());
+      const center = box.getCenter(new THREE.Vector3());
+      const maxDim = Math.max(size.x, size.y, size.z);
+      const scale  = 10 / maxDim;
+      model.scale.setScalar(scale);
+
+      // Re-center
+      const box2 = new THREE.Box3().setFromObject(model);
+      const c2   = box2.getCenter(new THREE.Vector3());
+      model.position.sub(c2);
+
+      scene.add(model);
+      currentModel = model;
+
+      // Place camera outside the model
+      const dist = 10 * 1.0;
+      yawObj.position.set(dist * 0.6, dist * 0.3, dist * 0.9);
+      yawObj.rotation.set(0, 0, 0);
+      pitchObj.rotation.set(0, 0, 0);
+
+      // Animations
+      if (gltf.animations.length) {
+        mixer = new THREE.AnimationMixer(model);
+        gltf.animations.forEach(clip => mixer.clipAction(clip).play());
+      }
+
+      hideLoading();
+    },
+    xhr => {
+      if (xhr.lengthComputable) {
+        const pct = (xhr.loaded / xhr.total) * 100;
+        fillEl.style.width = pct + '%';
+        loadText.textContent = `Loading ${name} — ${Math.round(pct)}%`;
+      }
+    },
+    err => {
+      loadText.textContent = `⚠ Could not load ${name} — drop a .glb file here`;
+      console.error(err);
+      setTimeout(hideLoading, 2000);
+    }
+  );
+}
+
+loadGLB('mlab.glb', 'mlab.glb');
+
+// ── Drag & drop ───────────────────────────────────────────────────────────────
+const dropOverlay = document.getElementById('drop-overlay');
+document.addEventListener('dragover',  e => { e.preventDefault(); dropOverlay.classList.add('active'); });
+document.addEventListener('dragleave', e => { if (!e.relatedTarget) dropOverlay.classList.remove('active'); });
+document.addEventListener('drop', e => {
+  e.preventDefault();
+  dropOverlay.classList.remove('active');
+  const file = e.dataTransfer.files[0];
+  if (!file) return;
+  loadGLB(URL.createObjectURL(file), file.name);
+});
+
+// ── Render loop ───────────────────────────────────────────────────────────────
+const clock    = new THREE.Clock();
+const fwdVec   = new THREE.Vector3();
+const rightVec = new THREE.Vector3();
+const worldUp  = new THREE.Vector3(0, 1, 0);
+const posEl    = document.getElementById('pos');
+const fpsEl    = document.getElementById('fps');
+let frameCount = 0, lastFpsTime = 0;
+
+const BASE_SPEED   = 0.08;
+const SPRINT_MULT  = 3.5;
+
+function animate() {
+  requestAnimationFrame(animate);
+  const delta = clock.getDelta();
+  const now   = performance.now() / 1000;
+
+  // FPS
+  frameCount++;
+  if (now - lastFpsTime >= 1) {
+    fpsEl.textContent = `${frameCount} fps`;
+    frameCount = 0;
+    lastFpsTime = now;
+  }
+
+  // Fly movement
+  const sprint = (keys['ShiftLeft'] || keys['ShiftRight']) ? SPRINT_MULT : 1;
+  const spd    = BASE_SPEED * sprint;
+
+  // Forward = camera world direction projected onto XZ plane
+  camera.getWorldDirection(fwdVec);
+  fwdVec.y = 0;
+  fwdVec.normalize();
+  rightVec.crossVectors(fwdVec, worldUp).normalize();
+
+  if (keys['KeyW'] || keys['ArrowUp'])    yawObj.position.addScaledVector(fwdVec,   spd);
+  if (keys['KeyS'] || keys['ArrowDown'])  yawObj.position.addScaledVector(fwdVec,  -spd);
+  if (keys['KeyA'] || keys['ArrowLeft'])  yawObj.position.addScaledVector(rightVec, -spd);
+  if (keys['KeyD'] || keys['ArrowRight']) yawObj.position.addScaledVector(rightVec,  spd);
+  if (keys['Space'])                      yawObj.position.y += spd;
+  if (keys['KeyQ'])                       yawObj.position.y -= spd;   // Q also goes down
+
+  // Shift alone (no other key) = descend
+  const shiftHeld = keys['ShiftLeft'] || keys['ShiftRight'];
+  const movingHz  = keys['KeyW'] || keys['KeyS'] || keys['KeyA'] || keys['KeyD'] ||
+                    keys['ArrowUp'] || keys['ArrowDown'] || keys['ArrowLeft'] || keys['ArrowRight'];
+  if (shiftHeld && !movingHz && !keys['Space']) yawObj.position.y -= BASE_SPEED;
+
+  const p = yawObj.position;
+  posEl.textContent = `${p.x.toFixed(1)}, ${p.y.toFixed(1)}, ${p.z.toFixed(1)}`;
+
+  if (mixer) mixer.update(delta);
+  renderer.render(scene, camera);
+}
+
+animate();
+
+window.addEventListener('resize', () => {
+  camera.aspect = window.innerWidth / window.innerHeight;
+  camera.updateProjectionMatrix();
+  renderer.setSize(window.innerWidth, window.innerHeight);
+});
+</script>
+</body>
+</html>
