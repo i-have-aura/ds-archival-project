@@ -15,7 +15,7 @@ const textures = [
     'glass1', 'forestfloor1', 'vines1', 'HazardStripe1', 'fern1', 'weed5'
 ];
 
-const BASE_URL = 'not leaking';
+const BASE_URL = 'put the asset url here';
 const OUT_DIR = './textures';
 
 if (!fs.existsSync(OUT_DIR)) fs.mkdirSync(OUT_DIR);

@@ -8,7 +8,7 @@ while (true) {
         aGS.push(aGS.shift());
     }
 }
-
+// console.log(aGS[ur hex here - 0x187]); // or js use like this
 for (let i = 1; i <= 4000; i++) {
     const val = aGS[i - 0x187];
     if (typeof val === "string" && val.toLowerCase().includes("to play")) {
